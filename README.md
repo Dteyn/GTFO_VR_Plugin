@@ -63,8 +63,7 @@ If you are using Wireless PCVR to play, and the weapon handling feels 'floaty' o
 	├── etc.
 	
 	
-	5. Make sure 'use desktop game theatre' is off in the properties of GTFO in the steam library 
-	(or in general steam settings)
+	5. Disable theatre mode here: SteamVr settings -> Dashboard -> 'Present Non-VR Applications on theater screen upon launch'
 	
 	6. While SteamVR is running, launch the game from the library or from within SteamVR and you're in!
 		Ignore the "GTFO does not support VR" warning, just click OK

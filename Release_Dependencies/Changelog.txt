@@ -1,3 +1,10 @@
+Total changelog (1.4.0b1):
+
+- Added proper roomscale movement - moving IRL will now actually move the player, instead of just the camera
+- Fixed nameplates disappearing when being snatched or transporting to another dimension
+- Fixed the ZONE button in the terminal containing the Zone description
+- Added the ability to scroll menus using the forward/backwards move input ( previously prev/next weapon buttons )
+
 Total changelog (1.3.4b2):
 
 - (Roughy) Fixed various issues with melee weapons, melee weapon position offsets, pistols, misaligned sights and sight textures.
