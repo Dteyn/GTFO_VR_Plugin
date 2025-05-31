@@ -108,7 +108,7 @@ namespace GTFO_VR.Core.VR_Input
             SteamVR_Action_Boolean boolActionMapping = GetBoolActionMapping(action);
             if (IsIRLCrouchValid(action))
             {
-                return (boolActionMapping != null && boolActionMapping.GetStateDown(SteamVR_Input_Sources.Any)) || HMD.Hmd.transform.localPosition.y + VRConfig.configFloorOffset.Value / 100f < VRConfig.configCrouchHeight.Value / 100f;
+                return (boolActionMapping != null && boolActionMapping.GetStateDown(SteamVR_Input_Sources.Any)) || (VRConfig.configIRLCrouchInvert.Value ? HMD.Hmd.transform.localPosition.y + VRConfig.configFloorOffset.Value / 100f >= VRConfig.configCrouchHeight.Value / 100f : HMD.Hmd.transform.localPosition.y + VRConfig.configFloorOffset.Value / 100f < VRConfig.configCrouchHeight.Value / 100f);
             }
 
             if (action.Equals(InputAction.TerminalExit) && VRKeyboard.KeyboardClosedThisFrame)
@@ -154,7 +154,7 @@ namespace GTFO_VR.Core.VR_Input
             SteamVR_Action_Boolean boolActionMapping = SteamVR_InputHandler.GetBoolActionMapping(action);
             if (IsIRLCrouchValid(action))
             {
-                return (boolActionMapping != null && boolActionMapping.GetState(SteamVR_Input_Sources.Any)) || HMD.Hmd.transform.localPosition.y + VRConfig.configFloorOffset.Value / 100f < VRConfig.configCrouchHeight.Value / 100f;
+                return (boolActionMapping != null && boolActionMapping.GetState(SteamVR_Input_Sources.Any)) || (VRConfig.configIRLCrouchInvert.Value ? HMD.Hmd.transform.localPosition.y + VRConfig.configFloorOffset.Value / 100f >= VRConfig.configCrouchHeight.Value / 100f : HMD.Hmd.transform.localPosition.y + VRConfig.configFloorOffset.Value / 100f < VRConfig.configCrouchHeight.Value / 100f);
             }
             return boolActionMapping != null && boolActionMapping.GetState(SteamVR_Input_Sources.Any);
         }
@@ -169,7 +169,7 @@ namespace GTFO_VR.Core.VR_Input
             SteamVR_Action_Boolean boolActionMapping = GetBoolActionMapping(action);
             if (IsIRLCrouchValid(action))
             {
-                return boolActionMapping != null && !boolActionMapping.GetStateDown(SteamVR_Input_Sources.Any) || !boolActionMapping.GetState(SteamVR_Input_Sources.Any) && (boolActionMapping.GetStateUp(SteamVR_Input_Sources.Any) || (HMD.Hmd.transform.localPosition.y + VRConfig.configFloorOffset.Value > VRConfig.configCrouchHeight.Value / 100f));
+                return boolActionMapping != null && !boolActionMapping.GetStateDown(SteamVR_Input_Sources.Any) || !boolActionMapping.GetState(SteamVR_Input_Sources.Any) && (boolActionMapping.GetStateUp(SteamVR_Input_Sources.Any) || (VRConfig.configIRLCrouchInvert.Value ? HMD.Hmd.transform.localPosition.y + VRConfig.configFloorOffset.Value / 100f <= VRConfig.configCrouchHeight.Value / 100f : HMD.Hmd.transform.localPosition.y + VRConfig.configFloorOffset.Value / 100f > VRConfig.configCrouchHeight.Value / 100f));
             }
             return boolActionMapping != null && boolActionMapping.GetStateUp(SteamVR_Input_Sources.Any);
         }
