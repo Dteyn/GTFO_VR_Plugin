@@ -10,6 +10,7 @@ namespace GTFO_VR.Core
     {
         internal static ConfigEntry<bool> configUseControllers;
         internal static ConfigEntry<bool> configIRLCrouch;
+        internal static ConfigEntry<bool> configIRLCrouchInvert;
         internal static ConfigEntry<bool> configUseLeftHand;
         internal static ConfigEntry<bool> configUseTwoHanded;
         internal static ConfigEntry<bool> configAlwaysDoubleHanded;
@@ -89,6 +90,7 @@ namespace GTFO_VR.Core
 
             configIRLCrouch = BindBool(file, "Input", "Crouch in-game when you crouch IRL?", true, "If true, when crouching down below a certain threshold IRL, the in-game character will also crouch", "Crouch on IRL crouch");
             configCrouchHeight = BindInt(file, "Input", "Crouch height in centimeters", 115, 90, 145, "In-game character will be crouching if your head is lower than this height above the playspace", "Crouch height (cm)");
+            configIRLCrouchInvert = BindBool(file, "Input", "Invert IRL crouch?", false, "If true, the IRL crouch will be inverted so you crouch while standing, and stand while crouching", "Invert IRL crouch");
             configSmoothSnapTurn = BindBool(file, "Input", "Use smooth turning?", false, "If true, will use smooth turn instead of snap turn", "Smooth turn");
             configSnapTurnAmount = BindInt(file, "Input", "Snap turn angle", 60, 0, 180, "The amount of degrees to turn on a snap turn", "Snap turn angle");            
             configSmoothTurnSpeed = BindInt(file, "Input", "Smooth turn speed", 90, 0, 180, "The amount of degrees to turn per second at full speed", "Smooth turn speed (degrees/s)");
