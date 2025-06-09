@@ -1,4 +1,4 @@
-﻿using GTFO_VR.Core;
+using GTFO_VR.Core;
 using GTFO_VR.Core.PlayerBehaviours;
 using GTFO_VR.Core.UI;
 using GTFO_VR.Core.VR_Input;
@@ -16,6 +16,33 @@ using UnityEngine;
 using Valve.VR;
 using Mathf = SteamVR_Standalone_IL2CPP.Util.Mathf;
 
+/* Team Status changes implemented by Dteyn:
+ * 
+ * - Added a new state for 'Status' in WatchState
+ * 
+ * - Added an entry in SetupRadialMenu() for status display, re-used the 'hacking tool' icon for now
+ * 
+ * - Added TMP for m_statusDisplay, which is used in SetupStatusDisplay()
+ *    - NOTE: For this I cloned 'WardenObjective' properties as I couldn't figure out how to get the text to fit on the watch face otherwise, so this will need improving but works for now.
+ * 
+ * - Added IEnumerator StatusUpdater() to update status while screen is active, refresh rate 250ms
+ *    - NOTE: Not sure this is done correctly, but it seems to work okay. This may need changing / improvement.
+ * 
+ * - Added a dictionary for lookup of 'tool types' to display sentry type (Burst, Auto, etc)
+ *    - NOTE: This is also a workaround, I found using 'ArchetypeName' wasn't specific enough for sentry gun so I used 'PublicName' and then created a dictionary to map publicname to what I wanted to display. This info must be available somewhere but I just couldn't find it in UnityExplorer / dnSpy so I made this workaround.
+ * 
+ * - Added a mapper for name colors to use based on slot index, similar to above I would prefer to pull the actual player name colors but this was a quick workaround just to get things working.
+ * 
+ * - Added helper routines for returning a text color for HP / ammo / infection based on percentage
+ * 
+ * - Added RefreshStatusDisplay() which loops through player backpack to get inventory info, and Dam_PlayerDamageBase to get HP and infection % and builds a string to update the status display
+ * 
+ * - Added a new case in SwitchState() to toggle status display, as well as a check to stop the status updater if it's not the active menu
+ *   - Added ToggleStatusRendering()
+ * 
+ * - Added check in OnDestroy() to make sure the status updater isn't running
+ */
+
 namespace GTFO_VR.UI
 {
     /// <summary>
@@ -31,7 +58,8 @@ namespace GTFO_VR.UI
         {
             Inventory,
             Objective,
-            Chat
+            Chat,
+            Status,  // Add a state for Status
         }
 
         public Watch(IntPtr value): base(value) { }
@@ -50,6 +78,33 @@ namespace GTFO_VR.UI
         DividedBarShaderController m_oxygenDisplay;
         TextMeshPro m_objectiveDisplay;
         TextMeshPro m_chatDisplay;
+
+        // Add a status display
+        TextMeshPro m_statusDisplay;
+        IEnumerator m_statusUpdater;  // coroutine for updating status while the display is active
+        const float STATUS_REFRESH = 0.25f;  // refresh delay for status screen, default 0.25s
+        static readonly Dictionary<string, string> ToolNameMap = new Dictionary<string, string>
+        {
+            /* Dictionary lookup for displaying tool names, specifically the sentry types
+             * ArchetypeName works for the mines/C-Foam/bio but for sentries is not specific enough
+             * We instead get the PublicName and map that to the type of sentry, or tool used
+             * There may be a better way to do this, but this works for now */
+            { "RAD Labs Meduza",     "HEL Auto Sentry" },
+            { "Mechatronic SGB3",    "Burst Sentry" },
+            { "Autotek 51 RSG",      "Sniper Sentry" },
+            { "Mechatronic B5 LFR",  "Shotgun Sentry" },
+            { "Krieger O4",          "Mine Deployer" },
+            { "Stalwart Flow G2",    "C-Foam Launcher" },
+            { "D-tek Optron IV",     "Bio Tracker" }
+        };
+        static readonly string[] nameColors = {
+            /* Name colors for 2nd/3rd/4th player slots
+             * Ideally, these colors should be looked up from the player's silhouette/name color,
+             * but for now this solution is used to keep things simple */
+            "#18935E", // 2nd player (Dauda)
+            "#20558C", // 3rd player (Hackett)
+            "#7A1A8E"  // 4th player (Bishop)
+        };
 
         Queue<string> msgBuffer = new Queue<string>();
 
@@ -109,6 +164,188 @@ namespace GTFO_VR.UI
             }
             m_chatDisplay.ForceMeshUpdate(false);
         }
+        
+        // Helper routines for mapping HP / Ammo / Infection % to colors for the status display
+        static string GetHpOrAmmoColor(int pct)  // Helper: map % to #RRGGBB (HP/Ammo palette)
+        {
+            if (pct > 80) return "#00FF00"; // green
+            if (pct >= 50) return "#FFFF00"; // yellow
+            if (pct >= 20) return "#FFA500"; // orange
+            return "#FF0000";                 // red
+        }
+
+        static string GetInfColor(int pct)  // Helper: map % to #RRGGBB (Infection palette; white for 0-19%)
+        {
+            if (pct < 20) return "#FFFFFF"; // white
+            if (pct < 50) return "#FFFF00"; // yellow
+            if (pct < 90) return "#FFA500"; // orange
+            return "#FF0000";                 // red
+        }
+
+        void RefreshStatusDisplay()
+        {
+            var agents = PlayerManager.PlayerAgentsInLevel;
+            var backpacks = PlayerBackpackManager.Current?.m_backpacks;
+            if (agents == null || backpacks == null || m_statusDisplay == null) return;
+
+            StringBuilder statusText = new StringBuilder(512);
+
+            int playerIndex = 0;  // tracks 2nd, 3rd and 4th players for name coloring and dividers
+
+            foreach (var agent in agents)
+            {
+                if (agent == null || agent.IsLocallyOwned) continue;
+                if (!backpacks.TryGetValue(agent.Owner.Lookup, out var playerBackpack) || playerBackpack == null) continue;
+
+                // Get HP and infection %
+                int hpPct = Mathf.Clamp((int)(agent.Damage.Health * 4f), 0, 100);
+                int infPct = Mathf.Clamp((int)(agent.Damage.Infection * 100f), 0, 100);
+
+                // Get AmmoStorage and Slots from PlayerBackpack
+                var ammo = playerBackpack.AmmoStorage;
+                var slots = playerBackpack.Slots;
+
+                // Helper to get ammo % for given slot
+                // This could probably be done in a better way, but this seems to be working
+                int GetAmmoPct(PlayerAmmoStorage ammo, InventorySlot slot)
+                {
+                    var slotAmmo = ammo.GetInventorySlotAmmo(slot);
+                    if (slotAmmo != null)
+                    {
+                        // Use floats for precision before rounding to int
+                        float reserve = slotAmmo.RelInPack * slotAmmo.BulletsMaxCap;
+                        float clip = ammo.GetClipAmmoFromSlot(slot);
+                        float total = reserve + clip;  // Calculate the ammo % based on the amount in reserve and clip
+                        float max = slotAmmo.BulletsMaxCap;
+                        return max > 0f ? Mathf.RoundToInt((total / max) * 100f) : 0;
+                    }
+                    return -1;
+                }
+
+                // Get ammo % based on total ammo in reserve and in clip
+                int priPct = GetAmmoPct(ammo, InventorySlot.GearStandard);
+                int secPct = GetAmmoPct(ammo, InventorySlot.GearSpecial);
+                int toolPct = GetAmmoPct(ammo, InventorySlot.GearClass);
+
+                // Look up the tool public name and map to our preferred display name
+                string toolPublic = (slots?.Count > 3) ? slots[3]?.Instance?.PublicName ?? "Tool" : "Tool";
+                string tool = ToolNameMap.TryGetValue(toolPublic, out var tooltype)
+                    ? tooltype
+                    : toolPublic;  // fall back to public name if not mapped
+
+                // Get the resource pack name and amount remaining
+                string packName = (slots?.Count > 4) ? slots[4]?.Instance?.ArchetypeName ?? "Pack" : "Pack";
+                int packPct = (ammo == null) ? -1 : (int)(ammo.GetBulletsRelInPack(AmmoType.ResourcePackRel) * 100);
+                int packUnits = Mathf.Clamp(Mathf.RoundToInt(packPct / 20f), 0, 6);  // convert 0-120% to units 0-6
+
+                // Get the consumable name and amount remaining (we don't use amount for now)
+                string consName = (slots?.Count > 5) ? slots[5]?.Instance?.ArchetypeName ?? "Item" : "Item";
+                int consPct = (ammo == null) ? -1 : (int)(ammo.GetBulletsRelInPack(AmmoType.CurrentConsumable) * 100);
+
+                // Player Name - color depending on player slot index:
+                //  2nd player - Dauda - Green is #18935E
+                //  3rd player - Hackett - Blue is #20558C
+                //  4th player - Bishop - Purple is #7A1A8E
+                string nameColor = "#66CCFF"; // fallback color, teal
+                if (playerIndex < nameColors.Length)  // use fallback if more than 3 teammates (ie: lobby expansion mod)
+                    nameColor = nameColors[playerIndex];  // use default name colors for players 2-4
+
+                // Health
+                // Palette: Green when above 90%, Yellow when at 50-89%, Orange when at 20-49%, and Red when below 20%
+                // TODO: Add option for bars using these characters: ███████░░░░░░
+                statusText.Append("<size=32><b><u><color=").Append(nameColor).Append('>')
+                  .Append(agent.PlayerName)
+                  .Append("</color></u></b> | <color=").Append(GetHpOrAmmoColor(hpPct))
+                  .Append(">HP: ")
+                  .Append(hpPct).Append("%</color></size><br>");
+
+                // Infection (shown only if player has infection)
+                // Palette: White up to 20%, Yellow from 20-49%, Orange from 50-89%, Red when above 90%
+                if (infPct > 0)
+                {
+                    statusText.Append("<b><size=26><color=")
+                      .Append(GetInfColor(infPct))
+                      .Append(">INFECTION: ").Append(infPct).Append("%</color></size></b><br>");
+                }
+
+                // Primary / Secondary ammo
+                // Palette: Green when above 90%, Yellow when at 50-89%, Orange when at 20-49%, and Red when below 20%
+                statusText.Append("<size=26>PRI:</size> <b><size=28><color=")
+                  .Append(GetHpOrAmmoColor(priPct)).Append('>').Append(priPct).Append("%</color></size></b> | ")
+                  .Append("<size=26>SEC:</size> <b><size=28><color=")
+                  .Append(GetHpOrAmmoColor(secPct)).Append('>').Append(secPct).Append("%</color></size></b><br>");
+
+                // Tool ammo
+                // Palette: Green when above 90%, Yellow when at 50-89%, Orange when at 20-49%, and Red when below 20%
+                statusText.Append("<size=26>")
+                  .Append(tool);  // Tool name
+                if (!tool.Contains("Bio Tracker", StringComparison.OrdinalIgnoreCase))  // Only show ammo if not a Bio Tracker
+                {
+                    statusText.Append(": <color=")
+                      .Append(GetHpOrAmmoColor(toolPct)).Append('>')
+                      .Append(toolPct).Append("%</color>");
+                }
+                statusText.Append("</size><br>");
+
+                // Resource Pack (shown only if player is carrying resources)
+                if (!string.IsNullOrEmpty(packName) && !packName.Equals("Pack", StringComparison.OrdinalIgnoreCase))
+                {
+                    statusText.Append("<size=24>")
+                      .Append(packName).Append(": ").Append(packUnits)
+                      .Append("</size>");
+                }
+
+                // Consumables (shown only if player is carrying an item)
+                if (!string.IsNullOrEmpty(consName) && !consName.Equals("Item", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.IsNullOrEmpty(packName) && !packName.Equals("Pack", StringComparison.OrdinalIgnoreCase))
+                        statusText.Append(" | "); // add separator if player is carrying both resources and item
+
+                    // Size is not specified for consumable name so it auto-sizes - it's the least important info
+                    statusText.Append(consName);
+                }
+
+                // If either Resources or Consumable line was printed, add <br>
+                if (
+                    (!string.IsNullOrEmpty(packName) && !packName.Equals("Pack", StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrEmpty(consName) && !consName.Equals("Item", StringComparison.OrdinalIgnoreCase))
+                )
+                {
+                    statusText.Append("<br>");
+                }
+
+                playerIndex++;  // Increment the player index
+
+                // Add a divider between players 2 and 3, but not after the 4th player (saves 1 line)
+                if (playerIndex == 1 || playerIndex == 2)
+                {
+                    statusText.Append("---------------------------<br>");
+                }
+            }
+
+            // Refresh the watch display with the updated team status
+            m_statusDisplay.text = statusText.ToString();
+            m_statusDisplay.ForceMeshUpdate();
+
+        }
+
+        // Below is a coroutine for updating the status panel while it's currently active
+        // I'm not sure if this is the best way to do this, but it works for now
+        IEnumerator StatusUpdater()
+        {
+            while (m_currentState == WatchState.Status)
+            {
+                RefreshStatusDisplay();
+                yield return new WaitForSeconds(STATUS_REFRESH);  // delay between refreshes
+            }
+            m_statusUpdater = null; // clear tracking field when switching away from the status screen
+        }
+
+        void StartStatusUpdater()
+        {
+            if (m_statusUpdater == null)
+                m_statusUpdater = MelonCoroutines.Start(StatusUpdater()) as IEnumerator;
+        }
 
         public void Setup(Transform parent)
         {
@@ -118,6 +355,7 @@ namespace GTFO_VR.UI
             SetHandedness();
             SetupObjectiveDisplay();
             SetupChatDisplay();
+            SetupStatusDisplay();  // Status Display
             SetupInventoryLinkData();
             SetInitialPlayerStatusValues();
             SwitchState(m_currentState);
@@ -136,6 +374,33 @@ namespace GTFO_VR.UI
             m_chatDisplay.fontSizeMax = 36;
             m_chatDisplay.alignment = TextAlignmentOptions.Center;
             MelonCoroutines.Start(SetRectSize(chatTransform, new Vector2(34, 43f)));
+        }
+
+        void SetupStatusDisplay()
+        {
+            // Create a new object for status display
+            GameObject statusParent = new GameObject("Status");
+            statusParent.transform.SetParent(transform, false);
+
+            // Clone the properties from the WardenObjective object so text fits properly
+            // This is not the proper way to do this, but it was the easiest fix for now
+            // We use the WardenObjective object and clone its position and scale for our Status object
+            GameObject template = transform.FindDeepChild("WardenObjective").gameObject;
+            statusParent.transform.localPosition = template.transform.localPosition;
+            statusParent.transform.localRotation = template.transform.localRotation;
+            statusParent.transform.localScale = template.transform.localScale;
+
+            RectTransform statusTransform = statusParent.AddComponent<RectTransform>();
+            m_statusDisplay = statusParent.AddComponent<TextMeshPro>();
+
+            // Set text size and other properties
+            m_statusDisplay.enableAutoSizing = true;
+            m_statusDisplay.fontSizeMin = 18;
+            m_statusDisplay.fontSizeMax = 36;
+            m_statusDisplay.alignment = TextAlignmentOptions.Left;
+            m_statusDisplay.richText = true;
+            m_statusDisplay.enabled = false; // make invisible until selected
+            MelonCoroutines.Start(SetRectSize(statusTransform, new Vector2(34, 43f)));
         }
 
         private void SetupRadialMenu(Transform parent)
@@ -158,6 +423,11 @@ namespace GTFO_VR.UI
             m_watchRadialMenu.AddRadialItem("Chat", SwitchToChat, out RadialItem chat);
             chat.SetIcon(VRAssets.Chat);
             chat.SetInfoText("Chat");
+
+            // Add a Status radial item
+            m_watchRadialMenu.AddRadialItem("Status", SwitchToStatus, out RadialItem status);
+            status.SetIcon(VRAssets.HackingToolFallback);  // Re-use the hacking tool icon for now
+            status.SetInfoText("Team Status");
         }
 
         public void TypeInChat()
@@ -181,6 +451,11 @@ namespace GTFO_VR.UI
         public void SwitchToObjective()
         {
             SwitchState(WatchState.Objective);
+        }
+
+        public void SwitchToStatus()
+        {
+            SwitchState(WatchState.Status);
         }
 
         private void WatchColorChanged(object sender, EventArgs e)
@@ -502,6 +777,13 @@ namespace GTFO_VR.UI
 
         void SwitchState(WatchState state)
         {
+            // Stop the status updater if we switched away from the status screen
+            if (m_currentState == WatchState.Status && state != WatchState.Status && m_statusUpdater != null)
+            {
+                MelonCoroutines.Stop(m_statusUpdater);
+                m_statusUpdater = null;
+            }
+
             m_currentState = state;
             switch (state)
             {
@@ -509,16 +791,27 @@ namespace GTFO_VR.UI
                     ToggleInventoryRendering(true);
                     ToggleObjectiveRendering(false);
                     ToggleChatRendering(false);
+                    ToggleStatusRendering(false);
                     break;
                 case (WatchState.Objective):
                     ToggleInventoryRendering(false);
                     ToggleObjectiveRendering(true);
                     ToggleChatRendering(false);
+                    ToggleStatusRendering(false);
                     break;
                 case (WatchState.Chat):
                     ToggleInventoryRendering(false);
                     ToggleObjectiveRendering(false);
                     ToggleChatRendering(true);
+                    ToggleStatusRendering(false);
+                    break;
+                case (WatchState.Status):
+                    ToggleInventoryRendering(false);
+                    ToggleObjectiveRendering(false);
+                    ToggleChatRendering(false);
+                    ToggleStatusRendering(true);
+                    RefreshStatusDisplay();  // update the status info immediately
+                    StartStatusUpdater();  // then keep upating while the Status panel is active
                     break;
             }
         }
@@ -558,6 +851,12 @@ namespace GTFO_VR.UI
             m_objectiveDisplay.ForceMeshUpdate();
         }
 
+        private void ToggleStatusRendering(bool toggle)
+        {
+            m_statusDisplay.enabled = toggle;
+            m_statusDisplay.ForceMeshUpdate();
+        }
+
         private void WatchScaleChanged(object sender, EventArgs e)
         {
             SetWatchScale();
@@ -575,6 +874,11 @@ namespace GTFO_VR.UI
             if(m_watchRadialMenu)
             {
                 Destroy(m_watchRadialMenu);
+            }
+            if (m_statusUpdater != null)
+            {
+                MelonCoroutines.Stop(m_statusUpdater);
+                m_statusUpdater = null;
             }
             ItemEquippableEvents.OnPlayerWieldItem -= ItemSwitched;
             InventoryAmmoEvents.OnInventoryAmmoUpdate -= AmmoUpdate;
